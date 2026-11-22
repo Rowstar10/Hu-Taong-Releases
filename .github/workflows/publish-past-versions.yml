@@ -26,6 +26,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ matrix.version }}
+      PYTHONUTF8: "1"          # (the notes can have characters Windows' console can't print otherwise)
     steps:
       # The build tools from the source repo's main branch, the game from the version's commit
       - uses: actions/checkout@v4
