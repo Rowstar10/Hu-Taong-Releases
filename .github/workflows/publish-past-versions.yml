@@ -1,0 +1,104 @@
+name: Publish past versions
+
+# Temporary, removed once it has run: builds past versions of Hu Taong from the source repo (while
+# it is still public) on GitHub's Windows machines, tries each build, and publishes it here as
+# release v<version>, with that version's Android APK copied from the source repo's release where
+# there is one. New versions come from release.py in the source repo instead.
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'JSON list like [{"version": "1.9", "commit": "<sha>", "latest": true}]'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include: ${{ fromJSON(inputs.versions) }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ matrix.version }}
+    steps:
+      # The build tools from the source repo's main branch, the game from the version's commit
+      - uses: actions/checkout@v4
+        with:
+          repository: Rowstar10/Hu-Taong
+          path: tools
+      - uses: actions/checkout@v4
+        with:
+          repository: Rowstar10/Hu-Taong
+          ref: ${{ matrix.commit }}
+          path: src
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build tools
+        run: python -m pip install --disable-pip-version-check -r tools/release/requirements.txt
+
+      - name: Build and zip
+        run: python tools/release/build.py --source src --version ${{ matrix.version }} --out dist
+
+      - name: Play it
+        shell: pwsh
+        run: |
+          # Before 0.9 the game saved nothing
+          $saves = Get-ChildItem -Recurse -Filter *.py src | Select-String -Quiet -Pattern "APPDATA"
+          ./tools/release/try-build.ps1 -Zip "dist/Hu-Taong-$env:VERSION-windows.zip" -NoSave:(-not $saves)
+
+      - name: Its Android APK
+        shell: pwsh
+        run: |
+          $apk = "Hu-Taong-$env:VERSION-android.apk"
+          $names = gh release view "v$env:VERSION" --repo Rowstar10/Hu-Taong --json assets --jq '.assets[].name' 2>$null
+          if ($LASTEXITCODE -eq 0 -and ($names -contains $apk)) {
+            gh release download "v$env:VERSION" --repo Rowstar10/Hu-Taong --pattern $apk --dir dist
+            Write-Host "Copied $apk"
+          } else {
+            Write-Host "No Android APK for $env:VERSION"
+          }
+          $global:LASTEXITCODE = 0
+
+      - name: Notes
+        shell: python
+        run: |
+          import os, pathlib
+          version = os.environ["VERSION"]
+          changelog = pathlib.Path("src/CHANGELOG.md")
+          lines, inside = [], False
+          for line in (changelog.read_text(encoding="utf-8").splitlines() if changelog.exists() else []):
+              if line.startswith("## "):
+                  words = line[3:].split()
+                  inside = bool(words) and words[0].strip("[]").lstrip("vV") == version
+                  continue
+              if inside:
+                  lines.append(line)
+          text = "\n".join(lines).strip() or f"Hu Taong {version}."
+          android = any(pathlib.Path("dist").glob("*.apk"))
+          text += (f"\n\n---\n\nInstall it from Toki Hub. Or download Hu-Taong-{version}-windows.zip, unzip it "
+                   "and run Hu Taong.exe" + ("; on Android, download the APK and open it." if android else ".") + "\n")
+          pathlib.Path("notes.md").write_text(text, encoding="utf-8")
+          print(text)
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          $tag = "v$env:VERSION"
+          $files = @("dist/Hu-Taong-$env:VERSION-windows.zip") + @(Get-ChildItem dist/*.apk | ForEach-Object FullName)
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            $latest = if ("${{ matrix.latest }}" -eq "true") { "--latest=true" } else { "--latest=false" }
+            gh release create $tag @files --repo $env:GITHUB_REPOSITORY --title "Hu Taong $env:VERSION" --notes-file notes.md $latest
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Publishing $tag failed" }
