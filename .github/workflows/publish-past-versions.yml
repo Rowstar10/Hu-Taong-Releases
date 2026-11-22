@@ -52,7 +52,7 @@ jobs:
         shell: pwsh
         run: |
           # Before 0.9 the game saved nothing
-          $saves = Get-ChildItem -Recurse -Filter *.py src | Select-String -Quiet -Pattern "APPDATA"
+          $saves = [bool](Get-ChildItem -Recurse -File -Include *.py src | Select-String -Pattern "APPDATA" -List | Select-Object -First 1)
           ./tools/release/try-build.ps1 -Zip "dist/Hu-Taong-$env:VERSION-windows.zip" -NoSave:(-not $saves)
 
       - name: Its Android APK
